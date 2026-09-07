@@ -2316,6 +2316,8 @@ fn decode_indexed_pixmap_payload(
     ))
 }
 
+const COLOR_TABLE_DEVICE_FLAG: u16 = 0x8000;
+
 /// Read a `ColorTable` record (already past the PixMap header) and
 /// return a **value-keyed** palette: a 256-entry `Vec<Rgba>` where slot
 /// `i` holds the RGB of the `ColorSpec` whose `value` field equals `i`.
@@ -2337,13 +2339,16 @@ fn decode_indexed_pixmap_payload(
 /// empty `ctTable` slot. A `value` outside `0..=255` is ignored (it can
 /// never be referenced by a ≤8-bpp PixData index).
 ///
-/// `ct_seed` / `ct_flags` are consumed but not otherwise used: the
-/// `ctFlags` high bit distinguishes a pixel-map table (0) from a
-/// device table (1) but does not change how a PICT-embedded indexed
-/// PixMap resolves its colours.
+/// Inside Macintosh: Imaging With QuickDraw identifies `$0000` as a
+/// pixel-map color table and `$8000` as an indexed-device color table
+/// (§4, book page 4-104; the structure summary repeats "high bit: 0 =
+/// PixMap; 1 = device" on page 4-120). Apple's *develop* Issue 1,
+/// "Palette Manager", makes the indexing rule explicit: device tables
+/// are sequential, so `ColorSpec` array position supplies the pixel
+/// value. Other tables use the explicit `ColorSpec.value` mapping.
 fn read_color_table_value_keyed(r: &mut Reader<'_>, context: &str) -> Result<Vec<Rgba>> {
     let _ct_seed = r.read_u32()?;
-    let _ct_flags = r.read_i16()?;
+    let ct_flags = r.read_u16()?;
     let ct_size = r.read_i16()?;
     if !(0..=255).contains(&ct_size) {
         return Err(PictError::invalid(format!(
@@ -2352,8 +2357,13 @@ fn read_color_table_value_keyed(r: &mut Reader<'_>, context: &str) -> Result<Vec
     }
     let n_entries = (ct_size as usize) + 1;
     let mut palette = vec![Rgba::BLACK; 256];
-    for _ in 0..n_entries {
+    for index in 0..n_entries {
         let value = r.read_u16()?;
+        let value = if ct_flags & COLOR_TABLE_DEVICE_FLAG != 0 {
+            index as u16
+        } else {
+            value
+        };
         let r16 = r.read_u16()?;
         let g16 = r.read_u16()?;
         let b16 = r.read_u16()?;

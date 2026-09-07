@@ -14,8 +14,18 @@
 //! decoder mapped purely by array position. This test hand-assembles a
 //! 4-bpp `PackBitsRect` whose colour table lists its entries in
 //! *reverse* `value` order and asserts the pixels resolve correctly.
+//!
+//! A device color table (`ctFlags` high bit set) has the opposite
+//! convention: `ColorSpec.value` is private device data and array
+//! position supplies the pixel index. A second test pins that path with
+//! all `value` fields zero, matching a real-world PICT that previously
+//! collapsed every color into palette slot zero. See Inside Macintosh:
+//! Imaging With QuickDraw §4, book pages 4-104 and 4-120, and Apple's
+//! *develop* Issue 1, "Palette Manager" ("Drawing With Palette Colors").
 
 use oxideav_pict::parse_pict;
+
+const COLOR_TABLE_DEVICE_FLAG: u16 = 0x8000;
 
 fn put_u16(out: &mut Vec<u8>, v: u16) {
     out.extend_from_slice(&v.to_be_bytes());
@@ -74,6 +84,24 @@ fn put_reversed_color_table(out: &mut Vec<u8>) {
     put_i16(out, (mapping.len() as i16) - 1); // ctSize
     for (value, [r, g, b]) in mapping {
         put_u16(out, value);
+        put_u16(out, u16::from_be_bytes([r, r]));
+        put_u16(out, u16::from_be_bytes([g, g]));
+        put_u16(out, u16::from_be_bytes([b, b]));
+    }
+}
+
+fn put_device_color_table(out: &mut Vec<u8>) {
+    let colors: [[u8; 3]; 4] = [
+        [0x00, 0x00, 0x00], // index 0 — black
+        [0xFF, 0x00, 0x00], // index 1 — red
+        [0x00, 0xFF, 0x00], // index 2 — green
+        [0x00, 0x00, 0xFF], // index 3 — blue
+    ];
+    put_u32(out, 0xDEADBEEF); // ctSeed
+    put_u16(out, COLOR_TABLE_DEVICE_FLAG); // ctFlags (device table)
+    put_i16(out, (colors.len() as i16) - 1); // ctSize
+    for [r, g, b] in colors {
+        put_u16(out, 0); // device-private value; not the pixel index
         put_u16(out, u16::from_be_bytes([r, r]));
         put_u16(out, u16::from_be_bytes([g, g]));
         put_u16(out, u16::from_be_bytes([b, b]));
@@ -173,4 +201,39 @@ fn indexed_color_table_unmatched_value_is_black() {
     };
     assert_eq!(p(0), [0x00, 0x00, 0x00], "unmatched idx 0 → black");
     assert_eq!(p(1), [0xFF, 0x00, 0x00], "idx 1 → red");
+}
+
+#[test]
+fn device_color_table_resolves_by_position_not_value() {
+    let width: i16 = 4;
+    let height: i16 = 1;
+    let row_bytes: u16 = 2;
+
+    let mut bytes: Vec<u8> = Vec::new();
+    put_pict_v2_prefix(&mut bytes, width, height);
+    put_u16(&mut bytes, 0x0098); // PackBitsRect
+    put_indexed_pixmap_header(&mut bytes, row_bytes, width, height, 4);
+    put_device_color_table(&mut bytes);
+    for _ in 0..2 {
+        put_i16(&mut bytes, 0);
+        put_i16(&mut bytes, 0);
+        put_i16(&mut bytes, height);
+        put_i16(&mut bytes, width);
+    }
+    put_u16(&mut bytes, 0); // mode
+    bytes.extend_from_slice(&pack_4bpp(&[0, 1, 2, 3], row_bytes as usize));
+    if bytes.len() % 2 != 0 {
+        bytes.push(0);
+    }
+    put_u16(&mut bytes, 0x00FF);
+
+    let img = parse_pict(&bytes).expect("decode device-table indexed PackBitsRect");
+    let p = |x: u32| {
+        let off = (x * 4) as usize;
+        [img.data[off], img.data[off + 1], img.data[off + 2]]
+    };
+    assert_eq!(p(0), [0x00, 0x00, 0x00], "position 0 → black");
+    assert_eq!(p(1), [0xFF, 0x00, 0x00], "position 1 → red");
+    assert_eq!(p(2), [0x00, 0xFF, 0x00], "position 2 → green");
+    assert_eq!(p(3), [0x00, 0x00, 0xFF], "position 3 → blue");
 }

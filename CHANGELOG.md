@@ -151,6 +151,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Device color tables resolve entries by array position.**
+  Indexed PixMaps with `ctFlags = 0x8000` carry device color tables,
+  where each `ColorSpec.value` is private device data rather than a
+  pixel index. The decoder previously treated those values as indices,
+  so a table whose values were all zero repeatedly overwrote palette
+  slot zero and rendered nearly everything black. Device tables now use
+  entry position while pixel-map tables retain their explicit
+  `ColorSpec.value` mapping; a synthetic regression covers both forms.
+
 - round 407: **Hostile `txSize` / `TxRatio` words could hang or panic
   the text rasteriser.** The glyph painter iterated every cell of each
   scaled design-pixel block (`cw × ch`) before bounds-checking, so a
